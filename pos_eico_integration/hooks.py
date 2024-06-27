@@ -86,6 +86,7 @@ app_include_js = "/assets/pos_eico_integration/js/pos_profile.js"
 # }
 
 override_doctype_class = {
+	'POS Profile': 'pos_eico_integration.pos_eico_integration.override.pos_profile.EICOPOSProfile',
 	'POS Invoice Merge Log': 'pos_eico_integration.pos_eico_integration.override.pos_invoice_merge_log.EICOPOSInvoiceMergeLog',
 	'POS Closing Entry': 'pos_eico_integration.pos_eico_integration.override.pos_closing_entry.EICOPOSClosingEntry'
 }
