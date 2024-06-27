@@ -14,7 +14,7 @@ app_license = "MIT"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/pos_eico_integration/css/pos_eico_integration.css"
-# app_include_js = "/assets/pos_eico_integration/js/pos_eico_integration.js"
+app_include_js = "/assets/pos_eico_integration/js/pos_profile.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/pos_eico_integration/css/pos_eico_integration.css"
@@ -84,6 +84,11 @@ app_license = "MIT"
 # override_doctype_class = {
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
+
+override_doctype_class = {
+	'POS Invoice Merge Log': 'pos_eico_integration.pos_eico_integration.override.pos_invoice_merge_log.EICOPOSInvoiceMergeLog',
+	'POS Closing Entry': 'pos_eico_integration.pos_eico_integration.override.pos_closing_entry.EICOPOSClosingEntry'
+}
 
 # Document Events
 # ---------------
