@@ -1,10 +1,9 @@
 from __future__ import unicode_literals
 import frappe
-from frappe.utils import flt, getdate
-from frappe.model.mapper import map_doc, map_child_doc
+from frappe.utils import getdate
 from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import POSInvoiceMergeLog
 from pos_eico_integration.pos_eico_integration.exception import common_exception
-from erpnext.accounts.party import get_party_shipping_address
+
 
 class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
