@@ -75,6 +75,7 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
                     sales_invoice_obj.eico_payment_term = pos_profile_serie_obj.get('eico_payment_term_nc')
                     sales_invoice_obj.eico_note_concept = pos_profile_serie_obj.get('eico_note_concept')
                     sales_invoice_obj.eico_description_note_concept = pos_profile_serie_obj.get('eico_description_note_concept')
+                    sales_invoice_obj.eico_nvfac_obsb = pos_profile_serie_obj.get('eico_nvfac_obsb')
 
                     if not sales_invoice_obj.return_against:
                         sales_invoice_obj.eico_per_fini = getdate(self.posting_date)
