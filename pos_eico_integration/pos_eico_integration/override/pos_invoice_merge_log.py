@@ -1,11 +1,34 @@
 from __future__ import unicode_literals
 import frappe
-from frappe.utils import getdate
-from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import POSInvoiceMergeLog
+from frappe.utils import getdate, nowdate
+from frappe.utils.background_jobs import enqueue
+from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
+    POSInvoiceMergeLog, get_invoice_customer_map, get_all_unconsolidated_invoices,
+    check_scheduler_status, job_already_enqueued, safe_load_json)
 from pos_eico_integration.pos_eico_integration.exception import common_exception
+import six
 
 
 class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
+
+    def on_submit(self):
+        pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
+
+        returns = [d for d in pos_invoice_docs if d.get('is_return') == 1]
+        sales = [d for d in pos_invoice_docs if d.get('is_return') == 0]
+
+        sales_invoice, credit_note = "", ""
+        if returns:
+            credit_note = self.process_merging_into_credit_note(returns)
+
+        if sales:
+            sales_invoice = self.process_merging_into_sales_invoice(sales)
+
+        self.save() # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
+
+        self.update_pos_invoices(pos_invoice_docs, sales_invoice, credit_note)
+
+        frappe.db.commit()
 
     def process_merging_into_sales_invoice(self, data):
 
@@ -99,3 +122,94 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
             sales_team.append(sales_team_row)
 
         sales_invoice_obj.set('sales_team', sales_team)
+
+##
+
+def is_pos_inv_merged(pos_inv_list, pos_closing_entry):
+    # Se debe determinar las facturas agrupadas que ya estan validadas y sacarlas de data
+
+    inv_list = [inv_ref.pos_invoice for inv_ref in pos_inv_list]
+    sql_pos_inv = frappe.db.sql('''
+        select pos_inv.name from `tabPOS Invoice Merge Log` as pos_merge
+        inner join `tabPOS Invoice Reference` as pos_inv on pos_inv.parent = pos_merge.name
+        where pos_merge.pos_closing_entry = %s
+        and pos_inv.parenttype = 'POS Invoice Merge Log'
+        and  pos_inv.parentfield = 'pos_invoices'
+        and pos_merge.docstatus = '1'
+        and pos_inv.pos_invoice in %s
+    ''', (pos_closing_entry, inv_list), as_dict=True)
+    pos_inv = sql_pos_inv and True or False
+
+    return pos_inv
+
+def pos_eico_consolidate_pos_invoices(pos_invoices=None, closing_entry=None):
+
+    invoices = pos_invoices or (closing_entry and closing_entry.get('pos_transactions')) or get_all_unconsolidated_invoices()
+    invoice_by_customer = get_invoice_customer_map(invoices)
+
+    if len(invoices) >= 10 and closing_entry:
+        closing_entry.set_status(update=True, status='Queued')
+        pos_eico_enqueue_job(pos_eico_create_merge_logs, invoice_by_customer=invoice_by_customer, closing_entry=closing_entry)
+    else:
+        pos_eico_create_merge_logs(invoice_by_customer, closing_entry)
+
+def pos_eico_enqueue_job(job, **kwargs):
+
+    check_scheduler_status()
+
+    closing_entry = kwargs.get('closing_entry') or {}
+
+    job_name = closing_entry.get("name")
+    if not job_already_enqueued(job_name):
+        enqueue(
+            job,
+            **kwargs,
+            queue="long",
+            timeout=10000,
+            event="processing_merge_logs",
+            job_name=job_name,
+            now=frappe.conf.developer_mode or frappe.flags.in_test
+        )
+
+        if job == pos_eico_create_merge_logs:
+            msg = _('POS Invoices will be consolidated in a background process')
+        else:
+            msg = _('POS Invoices will be unconsolidated in a background process')
+
+        frappe.msgprint(msg, alert=1)
+
+def pos_eico_create_merge_logs(invoice_by_customer, closing_entry=None):
+        try:
+            for customer, invoices in six.iteritems(invoice_by_customer):
+
+                pos_closing_entry = closing_entry.get('name') if closing_entry else None
+                if is_pos_inv_merged(invoices, pos_closing_entry):
+                    continue
+
+                merge_log = frappe.new_doc('POS Invoice Merge Log')
+                merge_log.posting_date = getdate(closing_entry.get('posting_date')) if closing_entry else nowdate()
+                merge_log.customer = customer
+                merge_log.pos_closing_entry = closing_entry.get('name') if closing_entry else None
+
+                merge_log.set('pos_invoices', invoices)
+                merge_log.save(ignore_permissions=True)
+                merge_log.submit()
+
+            if closing_entry:
+                closing_entry.set_status(update=True, status='Submitted')
+                closing_entry.db_set('error_message', '')
+                closing_entry.update_opening_entry()
+
+        except Exception as e:
+            frappe.db.rollback()
+            message_log = frappe.message_log.pop() if frappe.message_log else str(e)
+            error_message = safe_load_json(message_log)
+
+            if closing_entry:
+                closing_entry.set_status(update=True, status='Failed')
+                closing_entry.db_set('error_message', error_message)
+            raise
+
+        finally:
+            frappe.db.commit()
+            frappe.publish_realtime('closing_process_complete', {'user': frappe.session.user})
