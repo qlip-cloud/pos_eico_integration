@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 import frappe
+from frappe import _
 from frappe.utils import getdate, nowdate
 from frappe.utils.background_jobs import enqueue
 from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
