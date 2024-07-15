@@ -46,6 +46,12 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
         pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
 
+        status_fv = self.consolidated_invoice and frappe.get_value("Sales Invoice", self.consolidated_invoice, ['status']) or ''
+        status_nc = self.consolidated_credit_note and frappe.get_value("Sales Invoice", self.consolidated_credit_note, ['status']) or ''
+
+        if (status_nc in ('Draft', 'Cancelled')) or status_fv in ('Draft', 'Cancelled'):
+            frappe.throw(_("The invoice is in Draft/Cancelled. Please check"))
+
         self.update_pos_invoices(pos_invoice_docs, self.consolidated_invoice, self.consolidated_credit_note)
 
     def process_merging_into_sales_invoice(self, data):
@@ -138,6 +144,14 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
             sales_team.append(sales_team_row)
 
         sales_invoice_obj.set('sales_team', sales_team)
+
+    def on_cancel(self):
+
+        common_exception.validate_on_cancel()
+
+    def on_trash(self):
+
+        common_exception.validate_on_trash()
 
 ##
 
