@@ -1,18 +1,20 @@
 from __future__ import unicode_literals
 import frappe
 from frappe import _
-from frappe.utils import getdate, nowdate
+from frappe.utils import cstr, getdate, nowdate
 from frappe.utils.background_jobs import enqueue
 from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import (
     POSInvoiceMergeLog, get_invoice_customer_map, get_all_unconsolidated_invoices,
     check_scheduler_status, job_already_enqueued, safe_load_json)
+from electronic_invoicing_colombia.electronic_invoicing_colombia.uses_cases.sales_invoices.update import assert_is_not_wait_response
 from pos_eico_integration.pos_eico_integration.exception import common_exception
 import six
 
 
 class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
-    def on_submit(self):
+    def create_invoices(self):
+
         pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
 
         returns = [d for d in pos_invoice_docs if d.get('is_return') == 1]
@@ -27,9 +29,24 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
         self.save() # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
 
-        self.update_pos_invoices(pos_invoice_docs, sales_invoice, credit_note)
+    def submit_invoices(self):
 
-        frappe.db.commit()
+        self.process_submit_invoices(self.consolidated_credit_note)
+
+        self.process_submit_invoices(self.consolidated_invoice)
+
+    def process_submit_invoices(self, sales_inv_name):
+        if sales_inv_name:
+            si_doc = frappe.get_doc("Sales Invoice", sales_inv_name)
+            if si_doc.status == 'Draft':
+                si_doc.submit()
+                frappe.db.commit()
+
+    def on_submit(self):
+
+        pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
+
+        self.update_pos_invoices(pos_invoice_docs, self.consolidated_invoice, self.consolidated_credit_note)
 
     def process_merging_into_sales_invoice(self, data):
 
@@ -43,7 +60,6 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
         sales_invoice.set_posting_time = 1
         sales_invoice.posting_date = getdate(self.posting_date)
         sales_invoice.save()
-        sales_invoice.submit()
 
         self.consolidated_invoice = sales_invoice.name
 
@@ -65,7 +81,6 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
         # TODO: return could be against multiple sales invoice which could also have been consolidated?
         # credit_note.return_against = self.consolidated_invoice
         credit_note.save()
-        credit_note.submit()
 
         self.consolidated_credit_note = credit_note.name
 
@@ -128,7 +143,7 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
 def is_pos_inv_merged(pos_inv_list, pos_closing_entry):
     # Se debe determinar las facturas agrupadas que ya estan validadas y sacarlas de data
-
+    # No debe filtrar por status
     inv_list = [inv_ref.pos_invoice for inv_ref in pos_inv_list]
     sql_pos_inv = frappe.db.sql('''
         select pos_inv.name from `tabPOS Invoice Merge Log` as pos_merge
@@ -136,7 +151,6 @@ def is_pos_inv_merged(pos_inv_list, pos_closing_entry):
         where pos_merge.pos_closing_entry = %s
         and pos_inv.parenttype = 'POS Invoice Merge Log'
         and  pos_inv.parentfield = 'pos_invoices'
-        and pos_merge.docstatus = '1'
         and pos_inv.pos_invoice in %s
     ''', (pos_closing_entry, inv_list), as_dict=True)
     pos_inv = sql_pos_inv and True or False
@@ -181,9 +195,11 @@ def pos_eico_enqueue_job(job, **kwargs):
 
 def pos_eico_create_merge_logs(invoice_by_customer, closing_entry=None):
         try:
+            pos_closing_entry = closing_entry.get('name') if closing_entry else None
+            is_created_pos_merge = False
             for customer, invoices in six.iteritems(invoice_by_customer):
 
-                pos_closing_entry = closing_entry.get('name') if closing_entry else None
+                # Se mantiene para evitar duplicar las facturas creadas
                 if is_pos_inv_merged(invoices, pos_closing_entry):
                     continue
 
@@ -194,7 +210,27 @@ def pos_eico_create_merge_logs(invoice_by_customer, closing_entry=None):
 
                 merge_log.set('pos_invoices', invoices)
                 merge_log.save(ignore_permissions=True)
-                merge_log.submit()
+
+                # Se separa crear merge_log y submit
+                merge_log.create_invoices()
+
+                if not is_created_pos_merge:
+                    is_created_pos_merge = True
+
+            # Para garantizar que todos los POS Invoice Merge Log con sus Sales Invoice asociadas se mantengan
+            if is_created_pos_merge:
+                frappe.db.commit()
+
+            # Consultar los merge_log creados a partir del closing_entry (Cuando no hay closing_entry se lanza error)
+            if pos_closing_entry:
+                # TODO: determinar filtro
+                merge_log_list = frappe.db.get_values("POS Invoice Merge Log", filters={"pos_closing_entry": pos_closing_entry}, fieldname=["name"])
+                for row in merge_log_list:
+                    merge_log_obj = frappe.get_doc("POS Invoice Merge Log", row[0])
+                    merge_log_obj.submit_invoices()
+                    merge_log_obj.submit()
+            else:
+                frappe.throw(_("Invalid Pos Closing Entry"))
 
             if closing_entry:
                 closing_entry.set_status(update=True, status='Submitted')
