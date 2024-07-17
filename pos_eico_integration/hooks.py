@@ -36,6 +36,10 @@ app_include_js = "/assets/pos_eico_integration/js/pos_profile.js"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
+doctype_list_js = {
+    "POS Closing Entry" : "public/js/pos_closing_entry.js"
+}
+
 # Home Pages
 # ----------
 
