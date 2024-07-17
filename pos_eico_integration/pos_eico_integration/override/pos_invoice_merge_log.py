@@ -238,7 +238,7 @@ def pos_eico_create_merge_logs(invoice_by_customer, closing_entry=None):
             # Consultar los merge_log creados a partir del closing_entry (Cuando no hay closing_entry se lanza error)
             if pos_closing_entry:
                 # TODO: determinar filtro
-                merge_log_list = frappe.db.get_values("POS Invoice Merge Log", filters={"pos_closing_entry": pos_closing_entry}, fieldname=["name"])
+                merge_log_list = frappe.db.get_values("POS Invoice Merge Log", filters={"pos_closing_entry": pos_closing_entry}, fieldname=["name"], order_by="creation")
                 for row in merge_log_list:
                     merge_log_obj = frappe.get_doc("POS Invoice Merge Log", row[0])
                     merge_log_obj.submit_invoices()
