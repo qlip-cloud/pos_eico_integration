@@ -9,10 +9,36 @@ from erpnext.accounts.doctype.pos_invoice_merge_log.pos_invoice_merge_log import
 from pos_eico_integration.pos_eico_integration.exception import common_exception
 import six
 
+from electronic_invoicing_colombia.electronic_invoicing_colombia.service.setup.transaction.get_last import handle as get_last_transaction
+
 
 class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
     def on_submit(self):
+
+        status_nc, status_fv = self.get_status_invoices()
+
+        if not status_nc and not status_fv:
+            frappe.throw(_("There are no associated invoices. Please check"))
+
+        if (status_nc and status_nc in ('Draft', 'Cancelled')) or (status_fv and status_fv in ('Draft', 'Cancelled')):
+            frappe.throw(_("The invoice is Draft/Cancelled. Please check"))
+
+        pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
+
+        sales_invoice = self.consolidated_invoice or ""
+
+        credit_note = self.consolidated_credit_note or ""
+
+        self.update_pos_invoices(pos_invoice_docs, sales_invoice, credit_note)
+
+    def process_pos_merge(self):
+
+        status_nc, status_fv = self.get_status_invoices()
+
+        if (status_nc and status_nc in ('Cancelled')) or (status_fv and status_fv in ('Cancelled')):
+            frappe.throw(_("The invoice is Cancelled. Please check"))
+
         pos_invoice_docs = [frappe.get_doc("POS Invoice", d.pos_invoice) for d in self.pos_invoices]
 
         returns = [d for d in pos_invoice_docs if d.get('is_return') == 1]
@@ -25,51 +51,109 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
         if sales:
             sales_invoice = self.process_merging_into_sales_invoice(sales)
 
-        self.save() # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
-
-        self.update_pos_invoices(pos_invoice_docs, sales_invoice, credit_note)
-
-        frappe.db.commit()
-
     def process_merging_into_sales_invoice(self, data):
 
-        sales_invoice = self.get_new_sales_invoice()
+        submit_error = False
 
-        sales_invoice = self.merge_pos_invoice_into(sales_invoice, data)
+        if not self.consolidated_invoice:
 
-        self.get_serie_sales_invoice('eico_series', sales_invoice)
+            sales_invoice = self.get_new_sales_invoice()
 
-        sales_invoice.is_consolidated = 1
-        sales_invoice.set_posting_time = 1
-        sales_invoice.posting_date = getdate(self.posting_date)
-        sales_invoice.save()
-        sales_invoice.submit()
+            sales_invoice = self.merge_pos_invoice_into(sales_invoice, data)
 
-        self.consolidated_invoice = sales_invoice.name
+            self.get_serie_sales_invoice('eico_series', sales_invoice)
+
+            sales_invoice.is_consolidated = 1
+            sales_invoice.set_posting_time = 1
+            sales_invoice.posting_date = getdate(self.posting_date)
+            sales_invoice.save()
+
+            self.consolidated_invoice = sales_invoice.name
+
+            self.save() # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
+
+            frappe.db.commit()
+
+        else:
+
+            sales_invoice = frappe.get_doc("Sales Invoice", self.consolidated_invoice)
+
+        try:
+            sales_invoice.submit()
+        except Exception as e:
+            self.delete_inv_in_draft(self.consolidated_invoice)
+            frappe.throw(str(e))
 
         return sales_invoice.name
 
     def process_merging_into_credit_note(self, data):
 
-        credit_note = self.get_new_sales_invoice()
+        if not self.consolidated_credit_note:
 
-        credit_note.is_return = 1
+            credit_note = self.get_new_sales_invoice()
 
-        credit_note = self.merge_pos_invoice_into(credit_note, data)
+            credit_note.is_return = 1
 
-        self.get_serie_sales_invoice('eico_series_credit_note', credit_note)
+            credit_note = self.merge_pos_invoice_into(credit_note, data)
 
-        credit_note.is_consolidated = 1
-        credit_note.set_posting_time = 1
-        credit_note.posting_date = getdate(self.posting_date)
-        # TODO: return could be against multiple sales invoice which could also have been consolidated?
-        # credit_note.return_against = self.consolidated_invoice
-        credit_note.save()
-        credit_note.submit()
+            self.get_serie_sales_invoice('eico_series_credit_note', credit_note)
 
-        self.consolidated_credit_note = credit_note.name
+            credit_note.is_consolidated = 1
+            credit_note.set_posting_time = 1
+            credit_note.posting_date = getdate(self.posting_date)
+            # TODO: return could be against multiple sales invoice which could also have been consolidated?
+            # credit_note.return_against = self.consolidated_invoice
+            credit_note.save()
+
+            self.consolidated_credit_note = credit_note.name
+
+            self.save() # save consolidated_sales_invoice & consolidated_credit_note ref in merge log
+
+            frappe.db.commit()
+        else:
+
+            credit_note = frappe.get_doc("Sales Invoice", self.consolidated_credit_note)
+
+        try:
+            credit_note.submit()
+        except Exception as e:
+            self.delete_inv_in_draft(self.consolidated_credit_note, is_nc=True)
+            frappe.throw(str(e))
 
         return credit_note.name
+
+    def error_log(self, si_doc):
+
+        res = False
+
+        transaction_last = get_last_transaction(si_doc)
+
+        if transaction_last and transaction_last.is_services_down():
+
+            res = True
+
+        return res
+
+    def delete_inv_in_draft(self, inv_doc, is_nc=False):
+
+        if inv_doc:
+            inv_doc_obj = frappe.get_doc("Sales Invoice", inv_doc)
+            if inv_doc_obj.status == 'Draft' and not self.error_log(inv_doc_obj):
+                # eliminar la factura
+                if is_nc:
+                    self.consolidated_credit_note = ""
+                else:
+                    self.consolidated_invoice = ""
+                self.save()
+                inv_doc_obj.delete()
+                frappe.db.commit()
+
+    def get_status_invoices(self):
+
+        status_nc = self.consolidated_credit_note and frappe.get_value("Sales Invoice", self.consolidated_credit_note, ['status']) or ''
+        status_fv = self.consolidated_invoice and frappe.get_value("Sales Invoice", self.consolidated_invoice, ['status']) or ''
+
+        return status_nc, status_fv
 
     def get_serie_sales_invoice(self, serie_field, sales_invoice_obj):
         
@@ -124,6 +208,17 @@ class EICOPOSInvoiceMergeLog(POSInvoiceMergeLog):
 
         sales_invoice_obj.set('sales_team', sales_team)
 
+    def on_cancel(self):
+        # Evitar cancelar si existe facturas asociadas
+        if self.consolidated_invoice or self.consolidated_credit_note:
+
+            common_exception.validate_on_cancel()
+
+    def on_trash(self):
+        # Evitar eliminar si existe facturas asociadas
+        if self.consolidated_invoice or self.consolidated_credit_note:
+
+            common_exception.validate_on_trash()
 ##
 
 def is_pos_inv_merged(pos_inv_list, pos_closing_entry):
@@ -131,17 +226,16 @@ def is_pos_inv_merged(pos_inv_list, pos_closing_entry):
 
     inv_list = [inv_ref.pos_invoice for inv_ref in pos_inv_list]
     sql_pos_inv = frappe.db.sql('''
-        select pos_inv.name from `tabPOS Invoice Merge Log` as pos_merge
+        select pos_merge.name from `tabPOS Invoice Merge Log` as pos_merge
         inner join `tabPOS Invoice Reference` as pos_inv on pos_inv.parent = pos_merge.name
         where pos_merge.pos_closing_entry = %s
         and pos_inv.parenttype = 'POS Invoice Merge Log'
         and  pos_inv.parentfield = 'pos_invoices'
-        and pos_merge.docstatus = '1'
         and pos_inv.pos_invoice in %s
     ''', (pos_closing_entry, inv_list), as_dict=True)
-    pos_inv = sql_pos_inv and True or False
+    pos_merge = sql_pos_inv and sql_pos_inv[0] or False
 
-    return pos_inv
+    return pos_merge
 
 def pos_eico_consolidate_pos_invoices(pos_invoices=None, closing_entry=None):
 
@@ -180,37 +274,45 @@ def pos_eico_enqueue_job(job, **kwargs):
         frappe.msgprint(msg, alert=1)
 
 def pos_eico_create_merge_logs(invoice_by_customer, closing_entry=None):
-        try:
-            for customer, invoices in six.iteritems(invoice_by_customer):
+    try:
+        for customer, invoices in six.iteritems(invoice_by_customer):
 
-                pos_closing_entry = closing_entry.get('name') if closing_entry else None
-                if is_pos_inv_merged(invoices, pos_closing_entry):
-                    continue
+            pos_closing_entry = closing_entry.get('name') if closing_entry else None
+            inv_merge_log = is_pos_inv_merged(invoices, pos_closing_entry)
+            if inv_merge_log:
+                # TODO: verificar que FV y NC están creadas y validadas
+                merge_log_obj = frappe.get_doc("POS Invoice Merge Log", inv_merge_log)
+                merge_log_obj.process_pos_merge()
+                merge_log_obj.submit()
 
-                merge_log = frappe.new_doc('POS Invoice Merge Log')
-                merge_log.posting_date = getdate(closing_entry.get('posting_date')) if closing_entry else nowdate()
-                merge_log.customer = customer
-                merge_log.pos_closing_entry = closing_entry.get('name') if closing_entry else None
+                continue
 
-                merge_log.set('pos_invoices', invoices)
-                merge_log.save(ignore_permissions=True)
-                merge_log.submit()
+            merge_log = frappe.new_doc('POS Invoice Merge Log')
+            merge_log.posting_date = getdate(closing_entry.get('posting_date')) if closing_entry else nowdate()
+            merge_log.customer = customer
+            merge_log.pos_closing_entry = closing_entry.get('name') if closing_entry else None
 
-            if closing_entry:
-                closing_entry.set_status(update=True, status='Submitted')
-                closing_entry.db_set('error_message', '')
-                closing_entry.update_opening_entry()
+            merge_log.set('pos_invoices', invoices)
+            merge_log.save(ignore_permissions=True)
+            merge_log.process_pos_merge()
+            merge_log.submit()
 
-        except Exception as e:
-            frappe.db.rollback()
-            message_log = frappe.message_log.pop() if frappe.message_log else str(e)
-            error_message = safe_load_json(message_log)
+        if closing_entry:
+            closing_entry.set_status(update=True, status='Submitted')
+            closing_entry.db_set('error_message', '')
+            closing_entry.update_opening_entry()
 
-            if closing_entry:
-                closing_entry.set_status(update=True, status='Failed')
-                closing_entry.db_set('error_message', error_message)
-            raise
+    except Exception as e:
+        frappe.db.rollback()
+        message_log = frappe.message_log.pop() if frappe.message_log else str(e)
+        error_message = safe_load_json(message_log)
 
-        finally:
-            frappe.db.commit()
-            frappe.publish_realtime('closing_process_complete', {'user': frappe.session.user})
+        if closing_entry:
+            closing_entry.set_status(update=True, status='Failed')
+            closing_entry.db_set('error_message', error_message)
+
+        raise
+
+    finally:
+        frappe.db.commit()
+        frappe.publish_realtime('closing_process_complete', {'user': frappe.session.user})

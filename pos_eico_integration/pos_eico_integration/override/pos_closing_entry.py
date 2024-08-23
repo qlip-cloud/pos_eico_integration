@@ -18,4 +18,20 @@ class EICOPOSClosingEntry(POSClosingEntry):
     @frappe.whitelist()
     def retry(self):
 
-        pos_eico_consolidate_pos_invoices(closing_entry=self)
+        try:
+
+            pos_eico_consolidate_pos_invoices(closing_entry=self)
+
+            res = {
+                'status': 200,
+                'msg': self.name
+            }
+
+        except Exception as e:
+
+            res = {
+                'status': 500,
+                'msg': str(e)
+            }
+
+        return res

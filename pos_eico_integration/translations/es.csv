@@ -4,3 +4,6 @@ Sales Invoice Serie,Secuencia de Factura de Venta
 Credit Note Serie,Secuencia de Nota de Crédito
 It is not allowed to cancel the document,No está permitido cancelar el documento
 Discount Type,Tipo de Descuento
+The invoice is Cancelled. Please check,La factura está cancelada. Por favor verifique
+The invoice is Draft/Cancelled. Please check,La factura está en borrador/cancelada. Por favor verifique
+There are no associated invoices. Please check,No hay facturas asociadas. Por favor verifique
